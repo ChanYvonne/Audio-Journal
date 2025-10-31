@@ -2,11 +2,21 @@
 //  ContentView.swift
 //  AudioJournal
 //
-//  Created by Yvonne Chan on 10/24/25.
+//  Created by Yvonne Chan on 10/31/25.
 //
 
 import SwiftUI
 import Combine
+import AVFoundation
+import Speech
+
+// MARK: - Color Palette
+extension Color {
+    static let journalBeige = Color(red: 242/255, green: 233/255, blue: 228/255)
+    static let journalCream = Color(red: 242/255, green: 233/255, blue: 228/255)
+    static let journalTeal = Color(red: 107/255, green: 211/255, blue: 209/255)
+    static let journalGray = Color(red: 62/255, green: 74/255, blue: 89/255)
+}
 
 // MARK: - Models
 struct JournalEntry: Identifiable, Codable {
@@ -22,6 +32,113 @@ struct JournalEntry: Identifiable, Codable {
         self.transcript = transcript
         self.synthesis = synthesis
         self.questions = questions
+    }
+}
+
+// MARK: - Audio Manager
+class AudioManager: NSObject, ObservableObject {
+    @Published var isRecording = false
+    @Published var transcript = ""
+    @Published var authorizationStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
+    
+    private var audioEngine: AVAudioEngine?
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    
+    override init() {
+        super.init()
+        requestAuthorization()
+    }
+    
+    func requestAuthorization() {
+        SFSpeechRecognizer.requestAuthorization { status in
+            DispatchQueue.main.async {
+                self.authorizationStatus = status
+            }
+        }
+    }
+    
+    func startRecording() {
+        guard authorizationStatus == .authorized else {
+            print("Speech recognition not authorized")
+            return
+        }
+        
+        // Cancel any existing task
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        
+        // Configure audio session
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Audio session error: \(error)")
+            return
+        }
+        
+        // Create recognition request
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let recognitionRequest = recognitionRequest else {
+            print("Unable to create recognition request")
+            return
+        }
+        
+        recognitionRequest.shouldReportPartialResults = true
+        
+        // Create audio engine
+        audioEngine = AVAudioEngine()
+        guard let audioEngine = audioEngine else {
+            print("Unable to create audio engine")
+            return
+        }
+        
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            recognitionRequest.append(buffer)
+        }
+        
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            print("Audio engine start error: \(error)")
+            return
+        }
+        
+        // Start recognition
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+            guard let self = self else { return }
+            
+            if let result = result {
+                DispatchQueue.main.async {
+                    self.transcript = result.bestTranscription.formattedString
+                }
+            }
+            
+            if error != nil || result?.isFinal == true {
+                self.stopRecording()
+            }
+        }
+        
+        isRecording = true
+    }
+    
+    func stopRecording() {
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        
+        audioEngine = nil
+        recognitionRequest = nil
+        recognitionTask = nil
+        
+        isRecording = false
     }
 }
 
@@ -92,7 +209,7 @@ struct WelcomeView: View {
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Color(red: 0.95, green: 0.85, blue: 0.7), Color(red: 0.85, green: 0.75, blue: 0.65)],
+                colors: [Color(red: 0.95, green: 0.85, blue: 0.7), Color.journalBeige],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -118,7 +235,7 @@ struct WelcomeView: View {
                 Button(action: onContinue) {
                     Text("Get Started")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(Color(red: 0.85, green: 0.75, blue: 0.65))
+                        .foregroundColor(Color.journalBeige)
                         .frame(maxWidth: .infinity)
                         .padding()
                         .background(Color.white)
@@ -149,9 +266,9 @@ struct HomeView: View {
                         VStack(spacing: 12) {
                             Button(action: { showingNewEntry = true }) {
                                 HStack {
-                                    Image(systemName: "plus.circle.fill")
+                                    Image(systemName: "mic.circle.fill")
                                         .font(.title2)
-                                    Text("New Journal Entry")
+                                    Text("New Audio Entry")
                                         .font(.headline)
                                     Spacer()
                                 }
@@ -159,7 +276,7 @@ struct HomeView: View {
                                 .padding()
                                 .background(
                                     LinearGradient(
-                                        colors: [Color(red: 0.85, green: 0.65, blue: 0.55), Color(red: 0.75, green: 0.55, blue: 0.45)],
+                                        colors: [Color.journalTeal],
                                         startPoint: .leading,
                                         endPoint: .trailing
                                     )
@@ -175,13 +292,13 @@ struct HomeView: View {
                                         .font(.headline)
                                     Spacer()
                                 }
-                                .foregroundColor(Color(red: 0.75, green: 0.55, blue: 0.45))
+                                .foregroundColor(Color.journalGray)
                                 .padding()
                                 .background(Color.white)
                                 .cornerRadius(12)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color(red: 0.85, green: 0.65, blue: 0.55), lineWidth: 2)
+                                        .stroke(Color.journalTeal, lineWidth: 2)
                                 )
                             }
                         }
@@ -245,7 +362,7 @@ struct EntryCardView: View {
                 Text(entry.date, style: .date)
                     .font(.subheadline)
                     .fontWeight(.semibold)
-                    .foregroundColor(Color(red: 0.75, green: 0.55, blue: 0.45))
+                    .foregroundColor(Color.journalTeal)
                 Spacer()
                 Text(entry.date, style: .time)
                     .font(.caption)
@@ -315,7 +432,7 @@ struct EntryDetailView: View {
                         }) {
                             Text(isEditing ? "Save" : "Edit")
                                 .font(.subheadline)
-                                .foregroundColor(Color(red: 0.75, green: 0.55, blue: 0.45))
+                                .foregroundColor(Color.journalTeal)
                         }
                     }
                     
@@ -357,7 +474,7 @@ struct EntryDetailView: View {
                             HStack(alignment: .top, spacing: 12) {
                                 Text("\(index + 1).")
                                     .font(.body)
-                                    .foregroundColor(Color(red: 0.75, green: 0.55, blue: 0.45))
+                                    .foregroundColor(Color.journalTeal)
                                     .fontWeight(.semibold)
                                 Text(question)
                                     .font(.body)
@@ -386,51 +503,159 @@ struct EntryDetailView: View {
 // MARK: - New Entry View
 struct NewEntryView: View {
     @EnvironmentObject var viewModel: JournalViewModel
+    @StateObject private var audioManager = AudioManager()
     @Environment(\.presentationMode) var presentationMode
-    @State private var transcript = ""
+    @State private var showingPermissionAlert = false
     
     var body: some View {
         NavigationView {
-            VStack(spacing: 20) {
-                Text("For now, type your journal entry below. Speech-to-text coming soon!")
-                    .font(.subheadline)
-                    .foregroundColor(.gray)
-                    .multilineTextAlignment(.center)
-                    .padding()
+            ZStack {
+                LinearGradient(
+                    colors: [Color.journalTeal, Color.journalBeige],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
                 
-                TextEditor(text: $transcript)
-                    .padding(8)
-                    .background(Color(UIColor.systemGray6))
-                    .cornerRadius(8)
-                    .frame(maxHeight: .infinity)
-                
-                Button(action: saveEntry) {
-                    Text("Save Entry")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(transcript.isEmpty ? Color.gray : Color(red: 0.85, green: 0.65, blue: 0.55))
-                        .cornerRadius(12)
+                VStack(spacing: 40) {
+                    Spacer()
+                    
+                    // Waveform visualization placeholder
+                    if audioManager.isRecording {
+                        VStack(spacing: 16) {
+                            Text("Listening...")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.white)
+                            
+                            HStack(spacing: 4) {
+                                ForEach(0..<5) { i in
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.white.opacity(0.7))
+                                        .frame(width: 8, height: CGFloat.random(in: 20...80))
+                                        .animation(
+                                            Animation.easeInOut(duration: 0.5)
+                                                .repeatForever()
+                                                .delay(Double(i) * 0.1),
+                                            value: audioManager.isRecording
+                                        )
+                                }
+                            }
+                        }
+                    } else {
+                        VStack(spacing: 12) {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 60))
+                                .foregroundColor(.white.opacity(0.8))
+                            Text("Tap to start recording")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                        }
+                    }
+                    
+                    // Record button
+                    Button(action: toggleRecording) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 100, height: 100)
+                                .shadow(radius: 10)
+                            
+                            if audioManager.isRecording {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.red)
+                                    .frame(width: 40, height: 40)
+                            } else {
+                                Circle()
+                                    .fill(Color.red)
+                                    .frame(width: 60, height: 60)
+                            }
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    // Transcript preview
+                    if !audioManager.transcript.isEmpty {
+                        ScrollView {
+                            Text(audioManager.transcript)
+                                .font(.body)
+                                .foregroundColor(.white)
+                                .padding()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.white.opacity(0.2))
+                                .cornerRadius(12)
+                        }
+                        .frame(maxHeight: 200)
+                        .padding(.horizontal)
+                        
+                        Button(action: saveEntry) {
+                            Text("Save Entry")
+                                .font(.headline)
+                                .foregroundColor(Color.journalTeal)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.white)
+                                .cornerRadius(12)
+                        }
+                        .padding(.horizontal)
+                        .padding(.bottom, 20)
+                    }
                 }
-                .disabled(transcript.isEmpty)
             }
-            .padding()
             .navigationTitle("New Entry")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") {
+                        if audioManager.isRecording {
+                            audioManager.stopRecording()
+                        }
                         presentationMode.wrappedValue.dismiss()
                     }
                 }
             }
+            .alert("Microphone Permission Required", isPresented: $showingPermissionAlert) {
+                Button("Settings", action: openSettings)
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Please enable microphone and speech recognition access in Settings to record audio journals.")
+            }
+            .onAppear {
+                checkPermissions()
+            }
+        }
+    }
+    
+    private func toggleRecording() {
+        if audioManager.authorizationStatus != .authorized {
+            showingPermissionAlert = true
+            return
+        }
+        
+        if audioManager.isRecording {
+            audioManager.stopRecording()
+        } else {
+            audioManager.transcript = ""
+            audioManager.startRecording()
+        }
+    }
+    
+    private func checkPermissions() {
+        if audioManager.authorizationStatus == .notDetermined {
+            audioManager.requestAuthorization()
+        }
+    }
+    
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
     }
     
     private func saveEntry() {
         let newEntry = JournalEntry(
-            transcript: transcript,
+            transcript: audioManager.transcript,
             synthesis: "Your thoughts have been captured. Synthesis coming soon!",
             questions: [
                 "What emotions came up for you while journaling today?",
@@ -464,7 +689,7 @@ struct PromptsView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Image(systemName: "quote.bubble")
-                                .foregroundColor(Color(red: 0.75, green: 0.55, blue: 0.45))
+                                .foregroundColor(Color.journalTeal)
                             Text(prompt)
                                 .font(.body)
                         }
